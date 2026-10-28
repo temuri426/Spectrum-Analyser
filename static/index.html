@@ -1,0 +1,117 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wi-Spy DBx3 — RF Interference Analyzer</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#071019;color:#e6edf3;font:14px Arial,sans-serif}
+header{padding:14px 22px;border-bottom:1px solid #294052;display:flex;justify-content:space-between;align-items:center}
+h1{margin:0;font-size:23px}.sub,.hint{color:#829caf;font-size:12px}.live{color:#3fb950;font-weight:bold}
+main{max-width:1700px;margin:auto;padding:12px}.dashboard{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(380px,1fr);gap:12px;align-items:start}.left-column,.right-column{min-width:0}
+.panel{background:#0d1822;border:1px solid #294052;border-radius:7px;padding:12px;margin-bottom:12px}.title{font-size:17px;font-weight:bold;margin-bottom:9px}
+canvas{display:block;width:100%;background:#020609;border-radius:4px}#spectrum{height:285px}#waterfall{height:390px}#history{height:145px}#channels{height:120px}.hunt{min-height:0}.history-box{border:1px solid #263e4e;border-radius:5px;padding:8px;background:#07131d}.history-title{display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px}.yellow-text{color:#ffca28}.hunt-tip{margin:12px 0}.wifi-channels{margin-top:12px}.interference-panel{width:100%}.footer-status{padding:10px}
+.events-head,.event{display:grid;grid-template-columns:22px 1.5fr .75fr .7fr .7fr 1fr;gap:7px;align-items:center}
+.events-head{padding:7px;color:#829caf;font-size:10px;border-bottom:1px solid #263c4b}.event{padding:10px 7px;border:1px solid transparent;border-bottom-color:#203442;cursor:pointer;border-radius:6px}
+.event:hover{background:#102332}
+.event.selected{border:2px solid #ffca28;background:#211d0e;border-radius:6px;box-shadow:0 0 0 1px rgba(255,202,40,.18)}
+.dot{width:10px;height:10px;border-radius:50%}.freq{font-weight:bold}.muted{color:#829caf;font-size:11px}.tag{border:1px solid #3c5668;border-radius:4px;padding:3px 5px;font-size:10px}
+.hunt{min-height:390px}.badge{float:right;border:1px solid #3c5668;border-radius:15px;padding:6px 11px;color:#829caf}.badge.on{background:#ffca28;color:#111;border-color:#ffca28;font-weight:bold}
+.target{font-size:29px;color:#ffca28;font-weight:bold;margin-top:18px}.type{margin-top:3px}.level{font-size:30px;color:#ffca28;font-weight:bold;margin-top:15px}
+.meter{height:17px;background:#1d2d3b;border-radius:4px;overflow:hidden;margin:8px 0 14px}.meter i{display:block;height:100%;width:0;background:#ffca28}
+.stats{display:grid;grid-template-columns:1fr 1fr;border:1px solid #263e4e;border-radius:5px}.stat{padding:9px 11px;border-right:1px solid #263e4e;border-bottom:1px solid #263e4e}.stat:nth-child(2n){border-right:0}.stat:nth-last-child(-n+2){border-bottom:0}.stat b{display:block;color:#829caf;font-size:10px;font-weight:normal}.stat span{font-size:16px}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.metric{background:#0d1822;border:1px solid #294052;border-radius:7px;padding:10px}.metric small{color:#829caf}.metric strong{display:block;font-size:19px;margin-top:4px}
+button{background:#0d1d2a;border:1px solid #3b566a;color:#d6e3ed;border-radius:5px;padding:6px 10px;cursor:pointer}
+button.active{background:#3fb950;color:#fff;border-color:#3fb950;box-shadow:0 0 8px rgba(63,185,80,.5);font-weight:bold}
+@media(max-width:1050px){.dashboard{grid-template-columns:1fr}.hunt{min-height:390px}}@media(max-width:650px){.metrics{grid-template-columns:1fr 1fr}.events-head,.event{grid-template-columns:18px 1.4fr .7fr .8fr}.events-head>:nth-child(3),.event>:nth-child(3),.events-head>:nth-child(4),.event>:nth-child(4){display:none}}
+</style></head>
+<body>
+<header><div><h1>Wi-Spy DBx3</h1><div class="sub">RF Interference Analyzer & Source Finder</div></div>
+  <div style="display:flex;gap:8px">
+    <button id="btn24" onclick="setFrequencyRange('2.4GHz')" class="button active" style="padding:6px 10px;">2.4 GHz</button>
+    <button id="btn5" onclick="setFrequencyRange('5GHz')" class="button" style="padding:6px 10px;">5 GHz</button>
+  </div>
+</header>
+<div class="livebar"><span class="live" id="live">● LIVE</span>　<span class="sub">2.4 GHz · 2400–2495 MHz · 285 samples</span></div>
+<main>
+<div class="dashboard">
+
+  <section class="left-column">
+    <div class="panel">
+      <div class="title">Live Spectrum <span class="sub" id="spectrum-range-label">(2.4 GHz)</span></div>
+      <canvas id="spectrum"></canvas>
+      <div class="hint">Green = Wi-Fi Channels　 Yellow = Selected Signal</div>
+    </div>
+
+    <div class="panel">
+      <div class="title">Waterfall <span class="sub">(time history)</span><select id="wfwin" onchange="setWfWindow(this.value)" style="float:right;background:#0d1d2a;border:1px solid #3b566a;color:#d6e3ed;border-radius:5px;padding:4px 8px;font-size:11px"><option value="0">Live rolling</option><option value="60">Keep 1 min</option><option value="300">Keep 5 min</option><option value="600" selected>Keep 10 min</option><option value="1800">Keep 30 min</option></select></div>
+      <canvas id="waterfall"></canvas>
+      <div class="hint">Stacked view max-holds each time bucket so short bursts stay visible. Selected interference is outlined across the entire waterfall.</div>
+    </div>
+  </section>
+
+  <aside class="right-column">
+
+    <div class="panel hunt">
+      <div class="title">Source Hunt <span id="badge" class="badge">Inactive</span></div>
+
+      <div id="empty" class="hint">
+        Select an interference event below. The selected frequency will be outlined
+        in yellow on the spectrum and waterfall.
+      </div>
+
+      <div id="hunt" style="display:none">
+        <div class="target" id="tf">— MHz</div>
+        <div class="type" id="tt">—</div>
+
+        <div class="sub" style="margin-top:14px">Current Level</div>
+        <div class="level" id="tl">—</div>
+        <div class="meter"><i id="bar"></i></div>
+
+        <div class="stats">
+          <div class="stat"><b>PEAK</b><span id="tp">—</span></div>
+          <div class="stat"><b>BANDWIDTH</b><span id="tb">—</span></div>
+          <div class="stat"><b>DUTY CYCLE</b><span id="td">—</span></div>
+          <div class="stat"><b>CENTER FREQ</b><span id="tc">—</span></div>
+        </div>
+
+        <div class="hint hunt-tip">
+          <b>Move toward stronger signal.</b><br>
+          Higher (less negative) dBm = closer to the source.
+        </div>
+
+        <div class="history-box">
+          <div class="history-title">
+            <b>Signal Level History (selected band)</b>
+            <b id="now" class="yellow-text">Current: —</b>
+          </div>
+          <canvas id="history"></canvas>
+        </div>
+      </div>
+    </div>
+
+  </aside>
+</div>
+
+<div class="panel interference-panel">
+  <div class="title">
+    Detected RF Interference
+    <button onclick="clearTarget()" style="float:right">Clear</button>
+  </div>
+  <div class="events-head">
+    <div>#</div><div>Frequency</div><div>Bandwidth</div><div>Peak</div><div>Duty</div><div>Type</div>
+  </div>
+  <div id="events"></div>
+</div>
+
+<div class="metrics">
+  <div class="metric"><small>CURRENT PEAK</small><strong id="mp">—</strong></div>
+  <div class="metric"><small>NOISE FLOOR</small><strong id="mn">—</strong></div>
+  <div class="metric"><small>ACTIVE BANDWIDTH</small><strong id="mb">—</strong></div>
+  <div class="metric"><small>RF EVENTS</small><strong id="me">—</strong></div>
+</div>
+
+<div class="hint footer-status">
+  <span class="live">● LIVE</span>
+  <span>　|　Wi-Spy DBx3　|　</span>
+  Backend: <span id="status">checking…</span>
+  <span style="float:right" id="freq-display">2.4 GHz · 2400–2495 MHz · RBW 333 kHz</span>
+</div>
+</main><script src="/app.js?v=8"></script></body></html>

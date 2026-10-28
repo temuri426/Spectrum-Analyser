@@ -1,0 +1,127 @@
+const S=document.getElementById("spectrum"),W=document.getElementById("waterfall"),H=document.getElementById("history");
+const sx=S.getContext("2d"),wx=W.getContext("2d"),hx=H.getContext("2d");
+let target=null, selectedKey=null, events=[], signalHistory=[], lastFrame=null;
+let freqRange="2.4GHz"; // or "5GHz"
+
+// 2.4 GHz: 2400-2495 MHz, 5 GHz: 5150-5825 MHz
+const F0_24=2400, F1_24=2495;
+const F0_5G=5150, F1_5G=5825;
+
+// Current active range: {f0, f1, label}
+let currentRange = {f0: F0_24, f1: F1_24, label: "2.4GHz"};
+
+function setFrequencyRange(rangeLabel) {
+  freqRange = rangeLabel;
+  if (rangeLabel === "5GHz") {
+    currentRange = {f0: F0_5G, f1: F1_5G};
+    document.getElementById("live").nextElementSibling.textContent = "5GHz · 5150-5825 MHz · 285 samples";
+    document.getElementById("freq-display").textContent = "5 GHz · 5150–5825 MHz · RBW 333 kHz";
+  } else {
+    currentRange = {f0: F0_24, f1: F1_24};
+    document.getElementById("live").nextElementSibling.textContent = "2.4 GHz · 2400-2495 MHz · 285 samples";
+    document.getElementById("freq-display").textContent = "2.4 GHz · 2400–2495 MHz · RBW 333 kHz";
+  }
+  // Re-initialize canvases with new range
+  resize(S); resize(W); resize(H);
+  document.getElementById("status").textContent="Range switched to "+rangeLabel;
+}
+
+// Frequency conversion function - maps frequency to canvas x position
+function X(f,w){return (f-currentRange.f0)/(currentRange.f1-currentRange.f0)*w}
+
+// ... rest of the app.js remains unchanged, but all F0/F1 references need to use currentRange.f0/currentRange.f1
+
+// Update the frequency display in header
+document.querySelector("header div:last-child").innerHTML=`<span class="live" id="live">● LIVE</span>　<span class="sub">${freqRange} · ${currentRange.f0}-${currentRange.f1} MHz · 285 samples</span>`;
+
+// Update all canvas drawing functions to use currentRange instead of hardcoded F0/F1
+
+// drawSpectrum - update frequency ticks and channel markers
+function drawSpectrum(f){
+ const w=S.clientWidth,h=S.clientHeight;
+ sx.clearRect(0,0,w,h);
+ sx.strokeStyle="#183344"; sx.fillStyle="#7894a8"; sx.font="10px Arial";
+ 
+ // Draw frequency ticks based on current range
+ const numTicks=5;
+ for(let i=0;i<=numTicks;i++){
+   const x=w*i/numTicks;
+   const freq=currentRange.f0+(currentRange.f1-currentRange.f0)*i/numTicks;
+   sx.beginPath(); sx.moveTo(x,0); sx.lineTo(x,h-42); sx.stroke();
+   sx.fillText(freq.toFixed(0)+" MHz",Math.min(w-58,x+2),h-27);
+ }
+ 
+ // ... rest of drawing code uses currentRange.f0 instead of F0
+ // Update channel markers
+ [[2412,1],[2437,6],[2462,11]].forEach(([cf,ch])=>{
+   // Only show 2.4GHz channels when on 2.4GHz range
+   if (currentRange.f0===F0_24) {
+     const x=X(cf,w);
+     sx.strokeStyle="#16ed88"; sx.setLineDash([5,5]);
+     sx.beginPath(); sx.moveTo(x,0); sx.lineTo(x,h-45); sx.stroke(); sx.setLineDash([]);
+     sx.fillStyle="#16ed88"; sx.font="bold 11px Arial";
+     const label="CH "+ch, tw=sx.measureText(label).width;
+     sx.fillText(label,Math.max(2,Math.min(w-tw-2,x-tw/2)),h-11);
+   }
+ });
+ 
+ // ... rest unchanged
+}
+
+// drawWaterfall - update to use currentRange
+function drawWaterfall(fs){
+ const w=W.clientWidth,h=W.clientHeight;
+ wx.clearRect(0,0,w,h);
+ const n=Math.min(fs.length,Math.floor(h));
+ for(let y=0;y<n;y++){
+   const f=fs[fs.length-n+y];
+   for(let i=0;i<f.values.length;i++){
+     const x=Math.floor(i*w/f.values.length),x2=Math.max(x+1,Math.floor((i+1)*w/f.values.length));
+     wx.fillStyle=heat(f.values[i]);
+     wx.fillRect(x,y,x2-x,1)
+   }
+ }
+ // Update frequency markers based on current range
+ [2412,2437,2462].forEach(c=>{
+   // Only show 2.4GHz markers when on 2.4GHz
+   if (currentRange.f0===F0_24) {
+     const x=X(c,w);
+     wx.strokeStyle="rgba(22,237,136,.35)"; wx.beginPath(); wx.moveTo(x,0); wx.lineTo(x,h); wx.stroke()
+   }
+ });
+ // ... rest unchanged
+}
+
+// level function - update to use currentRange
+function level(f){
+ if(!target||!f||!Array.isArray(f.values)||!f.values.length)return null;
+ // DBx3 range depends on active frequency
+ const step=(currentRange.f1-currentRange.f0)/Math.max(1,f.values.length-1);
+ let a=Math.max(0,Math.floor((Number(target.start)-currentRange.f0)/step));
+ let b=Math.min(f.values.length-1,Math.ceil((Number(target.end)-currentRange.f0)/step));
+ if(!Number.isFinite(a)||!Number.isFinite(b))return null;
+ if(b<a){const c=Math.round((Number(target.center)-currentRange.f0)/step);a=b=Math.max(0,Math.min(f.values.length-1,c));}
+ let peak=-Infinity;
+ for(let i=a;i<=b;i++){const v=Number(f.values[i]);if(Number.isFinite(v)&&v>peak)peak=v;}
+ return Number.isFinite(peak)?Math.round(peak*10)/10:null;
+}
+
+// updateHunt and other functions that reference F0/F1 should use currentRange.f0/currentRange.f1
+
+// Frequency switch UI - add after the header
+function addFrequencySwitch(){
+  const headerRight = document.querySelector("header div:last-child");
+  const switchDiv = document.createElement('div');
+  switchDiv.innerHTML = `
+    <button onclick="setFrequencyRange('2.4GHz')" class="button" style="margin-left: 10px;">2.4 GHz</button></button>id=24ghz-btn/>
+    <button onclick="setFrequencyRange('5GHz')" class="button" style="margin-left: 10px;">5 GHz</button></button>id=5ghz-btn/>
+  `;
+  // Insert before the live status
+  const statusDiv = headerRight.parentNode;
+  statusDiv.insertBefore(switchDiv, headerRight);
+}
+
+// Call on init
+document.addEventListener("DOMContentLoaded", addFrequencyRangeSwitch);
+
+// Update the status bar text when range changes
