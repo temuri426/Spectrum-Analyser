@@ -10,6 +10,44 @@ library only.
 The dashboard supports **2.4 GHz and 5 GHz** bands, switchable at runtime without
 restarting the server or reloading the page.
 
+## Changes in this fork
+
+- Added background SSID scanning with the host's onboard Wi-Fi adapter. The
+  USB Wi-Spy DBx3 continues to supply the RF spectrum and waterfall data.
+- Added Wi-Fi overlays with SSID, primary channel number and frequency,
+  advertised channel width, and signal strength. A primary-channel marker
+  shows changes within a wider bonded channel. Dashed outlines indicate an
+  estimated width.
+- Added Wi-Fi RSSI in dBm from the adapter's scan cache where available, with
+  a percentage fallback. The SSID list shows the reading for each network.
+- Added a spectrum crosshair that snaps to 1 MHz and 1 dBm and displays
+  both values.
+- Corrected the 5 GHz display range and aligned the waterfall with browser
+  zoom. Live rolling is now the default waterfall mode.
+- Added a light/dark toggle that remembers the browser's preference.
+- Fixed shutdown on Ctrl+C and SIGTERM so the server stops and reaps the
+  Wi-Spy collector. Marked the startup scripts executable.
+
+Vibe coded via Codex (GPT-6.1 Sol Light).
+
+### Wi-Fi SSID overlay
+
+On hosts with NetworkManager and `nmcli`, the server automatically selects a
+managed non-USB Wi-Fi interface. To specify the interface, start the server
+with `WISPY_WIFI_INTERFACE=wlan0 ./start.sh` (use your actual interface name).
+The server refreshes the NetworkManager access point list in the background.
+
+Cyan outlines on the live spectrum show advertised channel width in MHz and
+Wi-Fi signal strength on the right-hand scale. With `iw` installed, the server
+reads dBm values from the onboard card's scan cache. The graph uses dBm when
+every network in the selected band has a reading and percentage otherwise.
+The SSID list shows dBm wherever a reading is available. Dashed outlines use a
+20 MHz estimate when bandwidth is unavailable. For wide 2.4 GHz channels the
+outline is centered on the primary frequency because the scan does not report
+the secondary channel. Expand **Wi-Fi SSIDs** below the graph for the primary
+frequency, width and strength of each network in the selected band. Anyone who
+can access the dashboard can see this list.
+
 ---
 
 ## 1. Hardware requirements

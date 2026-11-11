@@ -10,7 +10,20 @@ const sx = S.getContext("2d"), wx = W.getContext("2d"), hx = H.getContext("2d");
 let target = null, selectedKey = null, events = [], signalHistory = [],
     lastFrame = null, allFrames = [];
 let freqRange = "2.4GHz";
-const F0_24 = 2400, F1_24 = 2495, F0_5G = 5150, F1_5G = 5825;
+let wifi = { interface: null, networks: [], error: null };
+let spectrumHover = null;
+const DARK_CHART = {
+  grid: "#183344", muted: "#829caf", trace: "#3fb950", guide: "#16ed88",
+  selected: "#ffca28", wifiOutline: "#71d9ff", wifiText: "#a5e9ff",
+  labelBackground: "#0b2532", cursor: "#e6edf3",
+};
+const LIGHT_CHART = {
+  grid: "#cfdae3", muted: "#405c6e", trace: "#176b3d", guide: "#176b3d",
+  selected: "#996b00", wifiOutline: "#087eaa", wifiText: "#075573",
+  labelBackground: "#e6f2f8", cursor: "#17354a",
+};
+let chartColors = DARK_CHART;
+const F0_24 = 2400, F1_24 = 2495, F0_5G = 5150, F1_5G = 5836;
 const MIN_DBM = -120, MAX_DBM = -40;
 /* Waterfall gets its own contrast window (Chanalyzer Pro-style):
    noise floor renders as visible dark blue instead of near-black. */
@@ -22,7 +35,7 @@ let wfCache = null;
    wfHistory keeps every frame we receive (newest last) so the waterfall can be
    rebuilt for any time window instead of only the last screenful of rows.
    wfWindow = window length in seconds; 0 => "Live" (unstacked rolling rows). */
-let wfHistory = [], wfWindow = 600, wfLastTs = 0, sinceTs = 0;
+let wfHistory = [], wfWindow = 0, wfLastTs = 0, sinceTs = 0;
 const WF_MAX_AGE = 3600;            /* never retain more than 1 h in the browser */
 
 /* ---------------- colour palette ---------------- */
@@ -94,6 +107,159 @@ function X(f, w) {
   return (f - currentRange.f0) / (currentRange.f1 - currentRange.f0) * w;
 }
 
+function visibleWifi() {
+  return wifi.networks.filter(({ mhz }) => mhz >= currentRange.f0 && mhz <= currentRange.f1);
+}
+
+function wifiChannelLabel(mhz) {
+  if (mhz === 2484) return "Ch 14";
+  const base = currentRange.label === "5GHz" ? 5000 : 2407;
+  const channel = (mhz - base) / 5;
+  return Number.isInteger(channel) && channel > 0 &&
+    (base === 5000 || channel <= 13) ? `Ch ${channel}` : "";
+}
+
+function wifiChannelCenter(mhz, width) {
+  if (width === 40 || width === 80 || width === 160) {
+    // Each 5 GHz channel block starts at one of these 20 MHz primary frequencies.
+    const block = [[5180, 5320], [5500, 5720], [5745, 5885]].find(
+      ([first, last]) => mhz >= first && mhz <= last && (mhz - first) % 20 === 0
+    );
+    if (block) {
+      const firstPrimary = block[0] + Math.floor((mhz - block[0]) / width) * width;
+      if (firstPrimary + width - 20 <= block[1]) return firstPrimary + width / 2 - 10;
+    }
+  }
+  return mhz;
+}
+
+function drawWifi(ctx, w, ph) {
+  const networks = visibleWifi();
+  if (!networks.length) return;
+  const labels = [];
+  const hasDbm = networks.every(({ dbm }) => Number.isFinite(dbm));
+  const axisWidth = hasDbm ? 64 : 34;
+  const signalY = ({ signal, dbm }) => ph * (1 - (hasDbm
+    ? (Math.max(MIN_DBM, Math.min(MAX_DBM, dbm)) - MIN_DBM) / (MAX_DBM - MIN_DBM)
+    : signal / 100));
+  ctx.save();
+  ctx.font = "11px Arial";
+  ctx.lineWidth = 1;
+  for (const network of networks) {
+    const { mhz, width } = network;
+    const bandwidth = width || 20;
+    const center = wifiChannelCenter(mhz, bandwidth);
+    const x = X(center, w);
+    const halfSpan = bandwidth / 2 / (currentRange.f1 - currentRange.f0) * w;
+    const y = signalY(network);
+    ctx.beginPath();
+    ctx.moveTo(x - halfSpan, ph);
+    ctx.lineTo(x - halfSpan * .72, y);
+    ctx.lineTo(x + halfSpan * .72, y);
+    ctx.lineTo(x + halfSpan, ph);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(113,217,255,.08)";
+    ctx.fill();
+    ctx.strokeStyle = chartColors.wifiOutline;
+    ctx.setLineDash(width ? [] : [4, 3]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  for (const network of networks) {
+    const { ssid, mhz } = network;
+    const x = X(mhz, w);
+    const y = signalY(network);
+    ctx.strokeStyle = chartColors.wifiText;
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x, ph);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = chartColors.wifiText;
+    ctx.fillRect(x - 2, y, 4, 4);
+    const label = [wifiChannelLabel(mhz), `${mhz} MHz`, ssid].filter(Boolean).join(" · ");
+    const labelWidth = Math.min(w - axisWidth - 4, ctx.measureText(label).width + 8);
+    if (labelWidth <= 8) continue;
+    const left = Math.max(2, Math.min(w - axisWidth - labelWidth - 2, x - labelWidth / 2));
+    const firstTop = Math.max(2, Math.min(ph - 17, y - 17));
+    const top = [0, -17, 17, -34, 34].map(offset => firstTop + offset).find(candidate =>
+      candidate >= 2 && candidate <= ph - 17 &&
+      labels.every(label => left + labelWidth + 4 <= label.left ||
+        left >= label.right + 4 || candidate + 17 <= label.top || candidate >= label.top + 17)
+    );
+    if (top === undefined) continue;
+    labels.push({ left, right: left + labelWidth, top });
+    ctx.fillStyle = chartColors.labelBackground;
+    ctx.fillRect(left, top, labelWidth, 15);
+    ctx.fillStyle = chartColors.wifiText;
+    ctx.fillText(label, left + 4, top + 11, labelWidth - 8);
+  }
+
+  ctx.textAlign = "right";
+  const ticks = hasDbm
+    ? [MAX_DBM, (MAX_DBM + MIN_DBM) / 2, MIN_DBM].map(value => value + " dBm")
+    : ["100%", "50%", "0%"];
+  const tickPositions = [12, ph / 2 + 4, ph - 3];
+  ticks.forEach((label, index) => {
+    const y = tickPositions[index];
+    ctx.fillStyle = chartColors.labelBackground;
+    ctx.fillRect(w - axisWidth, y - 10, axisWidth, 13);
+    ctx.fillStyle = chartColors.wifiText;
+    ctx.fillText(label, w - 3, y);
+  });
+  ctx.restore();
+}
+
+function renderWifiList() {
+  const networks = visibleWifi();
+  const status = document.getElementById("wifi-status");
+  status.textContent = wifi.error || (wifi.interface
+    ? `Wi-Fi SSIDs · ${networks.length} in this band · ${wifi.interface}`
+    : "Waiting for onboard Wi-Fi scan…");
+  const rows = networks.map(({ ssid, mhz, signal, width, dbm }) => {
+    const item = document.createElement("li");
+    const bandwidth = width ? `${width} MHz wide` : "20 MHz estimated width";
+    item.textContent = [
+      ssid, wifiChannelLabel(mhz), `${mhz} MHz primary`, bandwidth,
+      Number.isFinite(dbm) ? `${dbm} dBm` : `${signal}% signal`
+    ].filter(Boolean).join(" · ");
+    return item;
+  });
+  document.getElementById("wifi-networks").replaceChildren(...rows);
+}
+
+function drawSpectrumHover(ctx, w, h, ph) {
+  if (spectrumHover === null) return;
+  const { f0, f1 } = currentRange;
+  const pointerMHz = f0 + spectrumHover.x * (f1 - f0);
+  const mhz = Math.round(pointerMHz);
+  const x = X(mhz, w);
+  const pointerY = Math.max(0, Math.min(ph, spectrumHover.y * h));
+  const dbm = Math.round(MAX_DBM - pointerY / ph * (MAX_DBM - MIN_DBM));
+  const y = ph * (MAX_DBM - dbm) / (MAX_DBM - MIN_DBM);
+  const label = `${mhz} MHz · ${dbm} dBm`;
+  ctx.save();
+  ctx.strokeStyle = chartColors.cursor;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x, 0);
+  ctx.lineTo(x, ph);
+  ctx.moveTo(0, y);
+  ctx.lineTo(w, y);
+  ctx.stroke();
+  ctx.font = "11px Arial";
+  const width = ctx.measureText(label).width + 12;
+  const left = x + width + 8 <= w ? x + 6 : Math.max(0, x - width - 6);
+  const top = y >= 25 ? y - 25 : y + 6;
+  ctx.fillStyle = chartColors.labelBackground;
+  ctx.fillRect(left, top, width, 19);
+  ctx.fillStyle = chartColors.cursor;
+  ctx.fillText(label, left + 6, top + 13);
+  ctx.restore();
+}
+
 /* ---------------- spectrum ---------------- */
 function drawSpectrum(f) {
   const { w, h, ctx } = fit(S);
@@ -101,8 +267,8 @@ function drawSpectrum(f) {
   ctx.clearRect(0, 0, w, h);
   const pad = 42, ph = h - pad;
 
-  ctx.strokeStyle = "#183344";
-  ctx.fillStyle = "#7894a8";
+  ctx.strokeStyle = chartColors.grid;
+  ctx.fillStyle = chartColors.muted;
   ctx.font = "10px Arial";
   const ticks = 5;
   for (let i = 0; i <= ticks; i++) {
@@ -120,11 +286,11 @@ function drawSpectrum(f) {
   if (currentRange.label === "2.4GHz") {
     [[2412, 1], [2437, 6], [2462, 11]].forEach(([cf, ch]) => {
       const x = X(cf, w);
-      ctx.strokeStyle = "#16ed88";
+      ctx.strokeStyle = chartColors.guide;
       ctx.setLineDash([5, 5]);
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ph); ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = "#16ed88";
+      ctx.fillStyle = chartColors.guide;
       ctx.font = "bold 11px Arial";
       const lab = "CH " + ch, tw = ctx.measureText(lab).width;
       ctx.fillText(lab, Math.max(2, Math.min(w - tw - 2, x - tw / 2)), h - 11);
@@ -135,7 +301,7 @@ function drawSpectrum(f) {
     const xa = X(Number(target.start), w), xb = X(Number(target.end), w);
     ctx.fillStyle = "rgba(255,202,40,.12)";
     ctx.fillRect(xa, 0, Math.max(2, xb - xa), ph);
-    ctx.strokeStyle = "#ffca28";
+    ctx.strokeStyle = chartColors.selected;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(xa, 0); ctx.lineTo(xa, ph);
@@ -144,9 +310,11 @@ function drawSpectrum(f) {
   }
 
   if (!f || !f.values || !f.values.length) {
-    ctx.fillStyle = "#829caf";
+    ctx.fillStyle = chartColors.muted;
     ctx.font = "13px Arial";
     ctx.fillText("Waiting for spectrum data…", 12, 24);
+    drawWifi(ctx, w, ph);
+    drawSpectrumHover(ctx, w, h, ph);
     return;
   }
 
@@ -170,16 +338,18 @@ function drawSpectrum(f) {
     const x = xAt(i), y = yAt(vals[i]);
     i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
   }
-  ctx.strokeStyle = "#3fb950";
+  ctx.strokeStyle = chartColors.trace;
   ctx.lineWidth = 1.2;
   ctx.stroke();
 
   let pk = -Infinity, pki = 0;
   for (let i = 0; i < n; i++) if (vals[i] > pk) { pk = vals[i]; pki = i; }
   if (Number.isFinite(pk)) {
-    ctx.fillStyle = "#ffca28";
+    ctx.fillStyle = chartColors.selected;
     ctx.beginPath(); ctx.arc(xAt(pki), yAt(pk), 3, 0, Math.PI * 2); ctx.fill();
   }
+  drawWifi(ctx, w, ph);
+  drawSpectrumHover(ctx, w, h, ph);
 }
 
 /* ---------------- waterfall ---------------- */
@@ -252,9 +422,15 @@ function drawWaterfall(fs) {
     return;
   }
 
-  if (!wfCache || wfCache.w !== w || wfCache.h !== h)
-    wfCache = { w, h, img: ctx.createImageData(w, h) };
-  const img = wfCache.img, d = img.data;
+  if (!wfCache || wfCache.canvas.width !== w || wfCache.canvas.height !== h) {
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const buffer = canvas.getContext("2d");
+    wfCache = { canvas, buffer, img: buffer.createImageData(w, h) };
+  }
+  const { canvas, buffer, img } = wfCache;
+  const d = img.data;
   d.fill(0);
 
   const stacked = wfWindow > 0 && wfHistory.length > 1;
@@ -267,7 +443,12 @@ function drawWaterfall(fs) {
       paintRow(d, y, w, f.values, f.values.length);
     }
   }
-  ctx.putImageData(img, 0, 0);
+  // drawImage applies the device-pixel transform set by fit; putImageData does not.
+  buffer.putImageData(img, 0, 0);
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(canvas, 0, 0, w, h);
+  ctx.restore();
 
   if (stacked) {                            /* time axis: now top -> oldest bottom */
     const step = wfWindow / h;
@@ -291,11 +472,11 @@ function drawHistory() {
   const { w, h, ctx } = fit(H);
   if (!w || !h) return;
   ctx.clearRect(0, 0, w, h);
-  ctx.strokeStyle = "#183344";
+  ctx.strokeStyle = chartColors.grid;
   ctx.beginPath(); ctx.moveTo(0, h - 1); ctx.lineTo(w, h - 1); ctx.stroke();
 
   if (signalHistory.length < 2) {
-    ctx.fillStyle = "#829caf";
+    ctx.fillStyle = chartColors.muted;
     ctx.font = "12px Arial";
     ctx.fillText("Select an interference event to see level history", 12, 22);
     return;
@@ -310,7 +491,7 @@ function drawHistory() {
     const y = h - 8 - ((v - mn) / rng) * (h - 20);
     i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
   });
-  ctx.strokeStyle = "#ffca28";
+  ctx.strokeStyle = chartColors.selected;
   ctx.lineWidth = 1.5;
   ctx.stroke();
 }
@@ -340,17 +521,18 @@ function updateRangeUI(label) {
   const live = document.getElementById("live");
   if (live && live.nextElementSibling)
     live.nextElementSibling.textContent = is5
-      ? "5 GHz · 5150–5825 MHz · 285 samples"
+      ? "5 GHz · 5150–5836 MHz · 458 samples"
       : "2.4 GHz · 2400–2495 MHz · 285 samples";
   const fd = document.getElementById("freq-display");
   if (fd) fd.textContent = is5
-      ? "5 GHz · 5150–5825 MHz · RBW 333 kHz"
+      ? "5 GHz · 5150–5836 MHz · RBW 1.5 MHz"
       : "2.4 GHz · 2400–2495 MHz · RBW 333 kHz";
   const rl = document.getElementById("spectrum-range-label");
   if (rl) rl.textContent = is5 ? "(5 GHz)" : "(2.4 GHz)";
   const b24 = document.getElementById("btn24"), b5 = document.getElementById("btn5");
   if (b24) b24.classList.toggle("active", !is5);
   if (b5) b5.classList.toggle("active", is5);
+  renderWifiList();
 }
 
 function syncRangeFromStatus(st) {
@@ -496,7 +678,56 @@ async function tickEvents() {
   } catch (e) {}
 }
 
+async function tickWifi() {
+  try {
+    const response = await fetch("/api/wifi");
+    if (!response.ok) throw new Error("Wi-Fi scan unavailable");
+    wifi = await response.json();
+  } catch {
+    wifi = { interface: null, networks: [], error: "Wi-Fi scan unavailable" };
+  }
+  renderWifiList();
+  drawSpectrum(lastFrame);
+}
+
+function setLightMode(light) {
+  document.documentElement.dataset.theme = light ? "light" : "dark";
+  chartColors = light ? LIGHT_CHART : DARK_CHART;
+  document.getElementById("theme-toggle").setAttribute("aria-pressed", String(light));
+}
+
 /* ---------------- boot ---------------- */
+let lightMode = false;
+try {
+  lightMode = localStorage.getItem("wispy-theme") === "light";
+} catch {
+  // The toggle still works when browser storage is unavailable.
+}
+setLightMode(lightMode);
+document.getElementById("theme-toggle").addEventListener("click", () => {
+  lightMode = !lightMode;
+  setLightMode(lightMode);
+  try {
+    localStorage.setItem("wispy-theme", lightMode ? "light" : "dark");
+  } catch {
+    // Keep the current theme for this page.
+  }
+  drawSpectrum(lastFrame);
+  drawHistory();
+});
+S.addEventListener("pointermove", event => {
+  const bounds = S.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return;
+  spectrumHover = {
+    x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
+    y: (event.clientY - bounds.top) / bounds.height,
+  };
+  drawSpectrum(lastFrame);
+});
+S.addEventListener("pointerleave", () => {
+  spectrumHover = null;
+  drawSpectrum(lastFrame);
+});
 window.addEventListener("resize", () => {
   drawSpectrum(lastFrame);
   drawWaterfall(allFrames);
@@ -506,5 +737,7 @@ const _wfsel = document.getElementById("wfwin");
 if (_wfsel) setWfWindow(_wfsel.value);
 tick();
 tickEvents();
+tickWifi();
 setInterval(tick, 500);
 setInterval(tickEvents, 2000);
+setInterval(tickWifi, 5000);

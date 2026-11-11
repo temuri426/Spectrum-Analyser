@@ -21,12 +21,33 @@ canvas{display:block;width:100%;background:#020609;border-radius:4px}#spectrum{h
 button{background:#0d1d2a;border:1px solid #3b566a;color:#d6e3ed;border-radius:5px;padding:6px 10px;cursor:pointer}
 button.active{background:#3fb950;color:#fff;border-color:#3fb950;box-shadow:0 0 8px rgba(63,185,80,.5);font-weight:bold}
 @media(max-width:1050px){.dashboard{grid-template-columns:1fr}.hunt{min-height:390px}}@media(max-width:650px){.metrics{grid-template-columns:1fr 1fr}.events-head,.event{grid-template-columns:18px 1.4fr .7fr .8fr}.events-head>:nth-child(3),.event>:nth-child(3),.events-head>:nth-child(4),.event>:nth-child(4){display:none}}
+.header-controls{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}
+#wfwin{float:right;background:#0d1d2a;border:1px solid #3b566a;color:#d6e3ed;border-radius:5px;padding:4px 8px;font-size:11px}
+:root{color-scheme:dark}
+:root[data-theme="light"]{color-scheme:light}
+[data-theme="light"] body{background:#eef3f7;color:#182832}
+[data-theme="light"] header,[data-theme="light"] .panel,[data-theme="light"] .metric{border-color:#b8c8d4}
+[data-theme="light"] .panel,[data-theme="light"] .metric{background:#fff}
+[data-theme="light"] .sub,[data-theme="light"] .hint,[data-theme="light"] .muted,[data-theme="light"] .events-head,[data-theme="light"] .badge,[data-theme="light"] .stat b,[data-theme="light"] .metric small{color:#405c6e}
+[data-theme="light"] .live{color:#176b3d}
+[data-theme="light"] #spectrum,[data-theme="light"] #history{background:#f5f9fc}
+[data-theme="light"] .history-box,[data-theme="light"] .stats,[data-theme="light"] .stat,[data-theme="light"] .tag,[data-theme="light"] .badge,[data-theme="light"] .events-head{border-color:#bccbd5}
+[data-theme="light"] .history-box{background:#edf4f8}
+[data-theme="light"] .event{border-bottom-color:#d4e0e8}
+[data-theme="light"] .event:hover{background:#eaf4fa}
+[data-theme="light"] .event.selected{background:#fff2cc;border-color:#996b00}
+[data-theme="light"] .yellow-text,[data-theme="light"] .target,[data-theme="light"] .level{color:#795400}
+[data-theme="light"] .badge.on{color:#3c2a00;border-color:#996b00}
+[data-theme="light"] .meter{background:#dce7ee}
+[data-theme="light"] button,[data-theme="light"] #wfwin{background:#f1f6fa;border-color:#8fa6b6;color:#17354a}
+[data-theme="light"] button.active,[data-theme="light"] #theme-toggle[aria-pressed="true"]{background:#176b3d;border-color:#176b3d;color:#fff;box-shadow:none}
 </style></head>
 <body>
 <header><div><h1>Wi-Spy DBx3</h1><div class="sub">RF Interference Analyzer & Source Finder</div></div>
-  <div style="display:flex;gap:8px">
+  <div class="header-controls">
     <button id="btn24" onclick="setFrequencyRange('2.4GHz')" class="button active" style="padding:6px 10px;">2.4 GHz</button>
     <button id="btn5" onclick="setFrequencyRange('5GHz')" class="button" style="padding:6px 10px;">5 GHz</button>
+    <button id="theme-toggle" type="button" aria-pressed="false">Light mode</button>
   </div>
 </header>
 <div class="livebar"><span class="live" id="live">● LIVE</span>　<span class="sub">2.4 GHz · 2400–2495 MHz · 285 samples</span></div>
@@ -37,11 +58,15 @@ button.active{background:#3fb950;color:#fff;border-color:#3fb950;box-shadow:0 0 
     <div class="panel">
       <div class="title">Live Spectrum <span class="sub" id="spectrum-range-label">(2.4 GHz)</span></div>
       <canvas id="spectrum"></canvas>
-      <div class="hint">Green = Wi-Fi Channels　 Yellow = Selected Signal</div>
+      <div class="hint">Green = Wi-Spy trace and channel guides. Cyan = Wi-Fi channel width and signal strength (right axis). Vertical marker = primary channel. Dashed outline = estimated width. Yellow shading = selected signal.</div>
+      <details class="hint">
+        <summary id="wifi-status">Waiting for onboard Wi-Fi scan&#8230;</summary>
+        <ul id="wifi-networks"></ul>
+      </details>
     </div>
 
     <div class="panel">
-      <div class="title">Waterfall <span class="sub">(time history)</span><select id="wfwin" onchange="setWfWindow(this.value)" style="float:right;background:#0d1d2a;border:1px solid #3b566a;color:#d6e3ed;border-radius:5px;padding:4px 8px;font-size:11px"><option value="0">Live rolling</option><option value="60">Keep 1 min</option><option value="300">Keep 5 min</option><option value="600" selected>Keep 10 min</option><option value="1800">Keep 30 min</option></select></div>
+      <div class="title">Waterfall <span class="sub">(time history)</span><select id="wfwin" onchange="setWfWindow(this.value)"><option value="0" selected>Live rolling</option><option value="60">Keep 1 min</option><option value="300">Keep 5 min</option><option value="600">Keep 10 min</option><option value="1800">Keep 30 min</option></select></div>
       <canvas id="waterfall"></canvas>
       <div class="hint">Stacked view max-holds each time bucket so short bursts stay visible. Selected interference is outlined across the entire waterfall.</div>
     </div>
@@ -114,4 +139,4 @@ button.active{background:#3fb950;color:#fff;border-color:#3fb950;box-shadow:0 0 
   Backend: <span id="status">checking…</span>
   <span style="float:right" id="freq-display">2.4 GHz · 2400–2495 MHz · RBW 333 kHz</span>
 </div>
-</main><script src="/app.js?v=8"></script></body></html>
+</main><script src="/app.js?v=22"></script></body></html>

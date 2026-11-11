@@ -27,6 +27,118 @@ if ":" in RANGE:
 HISTORY=int(os.getenv("WISPY_HISTORY","1500")); frames=deque(maxlen=HISTORY); lock=threading.Lock(); stop=threading.Event()
 range_lock=threading.Lock(); current_proc=[None]; gen=[0]
 rx=re.compile(r"^Wi-Spy DBx USB[^:]*:\s+(.+)$"); BASE=Path(__file__).parent
+WIFI_INTERFACE = os.getenv("WISPY_WIFI_INTERFACE")
+wifi_snapshot = {"interface": None, "networks": [], "error": None}
+
+
+def nmcli(fields, *args):
+    return subprocess.run(
+        ["nmcli", "--colors", "no", "--terse", "--escape", "yes",
+         "--fields", fields, *args],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env={**os.environ, "LC_ALL": "C.UTF-8"}, check=True, timeout=20,
+    ).stdout
+
+
+def wifi_interface():
+    if WIFI_INTERFACE:
+        return WIFI_INTERFACE
+    for row in nmcli("TYPE,STATE,DEVICE", "device", "status").split("\n"):
+        kind, state, name = row.split(":", 2) if row else ("", "", "")
+        if kind != "wifi" or state == "unmanaged":
+            continue
+        device = Path("/sys/class/net", name, "device")
+        if device.exists() and not any(re.fullmatch(r"usb\d+", part)
+                                       for part in device.resolve().parts):
+            return name
+    return None
+
+
+def wifi_networks(output, readings, has_bandwidth=True):
+    networks = {}
+    field_count = 4 if has_bandwidth else 3
+    for row in output.split("\n"):
+        address = re.match(r"^([0-9a-f]{2}(?:\\?:[0-9a-f]{2}){5}):", row, re.I)
+        if not address:
+            continue
+        bssid = address[1].replace("\\", "").lower()
+        fields = row[address.end():].rsplit(":", field_count - 1)
+        if len(fields) != field_count:
+            continue
+        name, frequency, signal = fields[:3]
+        if not name:
+            continue
+        try:
+            mhz = int(frequency.removesuffix(" MHz"))
+            strength = int(signal)
+        except ValueError:
+            continue
+        bandwidth = fields[3].removesuffix(" MHz") if has_bandwidth else ""
+        width = int(bandwidth) if bandwidth.isascii() and bandwidth.isdecimal() else 0
+        ssid = re.sub(r"\\([:\\])", r"\1", name)
+        key = (ssid, mhz)
+        dbm = readings.get((bssid, mhz))
+        if key not in networks or strength > networks[key]["signal"] or (
+            strength == networks[key]["signal"] and dbm is not None and
+            (networks[key]["dbm"] is None or dbm > networks[key]["dbm"])
+        ):
+            networks[key] = {"ssid": ssid, "mhz": mhz, "signal": strength,
+                             "width": width or None, "dbm": dbm}
+    return sorted(networks.values(), key=lambda network: -network["signal"])
+
+
+def wifi_dbm(interface):
+    try:
+        output = subprocess.run(
+            ["iw", "dev", interface, "scan", "dump"], capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            env={**os.environ, "LC_ALL": "C"}, check=True, timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    readings = {}
+    for entry in re.split(r"(?m)^BSS ", output)[1:]:
+        address = re.match(r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}", entry, re.I)
+        frequency = re.search(r"(?m)^[ \t]+freq:[ \t]+(\d+)", entry)
+        signal = re.search(r"(?m)^[ \t]+signal:[ \t]+(-?\d+(?:\.\d+)?) dBm[ \t]*$", entry)
+        if address and frequency and signal:
+            readings[address[0].lower(), int(frequency[1])] = float(signal[1])
+    return readings
+
+
+def scan_wifi(interface):
+    args = ("device", "wifi", "list", "ifname", interface, "--rescan", "auto")
+    has_bandwidth = True
+    try:
+        output = nmcli("BSSID,SSID,FREQ,SIGNAL,BANDWIDTH", *args)
+    except subprocess.CalledProcessError as exc:
+        if "invalid field" not in exc.stderr.lower():
+            raise
+        output = nmcli("BSSID,SSID,FREQ,SIGNAL", *args)
+        has_bandwidth = False
+    return wifi_networks(output, wifi_dbm(interface) if output else {}, has_bandwidth)
+
+
+def collect_wifi():
+    global wifi_snapshot
+    while not stop.is_set():
+        interface = None
+        networks = []
+        error = None
+        try:
+            interface = wifi_interface()
+            if interface:
+                networks = scan_wifi(interface)
+            else:
+                error = "No onboard Wi-Fi interface managed by NetworkManager"
+        except FileNotFoundError:
+            error = "nmcli is unavailable"
+        except subprocess.CalledProcessError as exc:
+            error = exc.stderr.strip() or "Wi-Fi scan failed"
+        except subprocess.TimeoutExpired:
+            error = "Wi-Fi scan timed out"
+        wifi_snapshot = {"interface": interface, "networks": networks, "error": error}
+        stop.wait(15)
 
 def set_active_range(label):
     global CURRENT_RANGE,ACTIVE_F0,ACTIVE_F1,ACTIVE_LABEL
@@ -98,7 +210,10 @@ def collect():
                 rng=CURRENT_RANGE; g=gen[0]
             p=subprocess.Popen(["spectool_raw","-r",rng],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,bufsize=1)
             current_proc[0]=p
-            for line in p.stdout:
+            shutting_down = stop.is_set()
+            if shutting_down:
+                p.terminate()
+            for line in (() if shutting_down else p.stdout):
                 if stop.is_set(): break
                 if gen[0]!=g: break
                 m=rx.match(line.strip())
@@ -112,11 +227,12 @@ def collect():
             except Exception:
                 try: p.kill()
                 except Exception: pass
+                p.wait()
         except FileNotFoundError:
             print("spectool_raw not found; install spectools");return
         except Exception as e: print("collector:",e)
         current_proc[0]=None
-        time.sleep(1)
+        stop.wait(1)
 
 class H(BaseHTTPRequestHandler):
     def log_message(self,*a):pass
@@ -126,6 +242,8 @@ class H(BaseHTTPRequestHandler):
         parsed=urlparse(self.path); path=parsed.path
         if path in ("/","/index.html"):return self.out((BASE/"static/index.html").read_bytes(),"text/html; charset=utf-8")
         if path=="/app.js":return self.out((BASE/"static/app.js").read_bytes(),"text/javascript; charset=utf-8")
+        if path=="/api/wifi":
+            return self.out(json.dumps(wifi_snapshot).encode(),"application/json")
         if path=="/api/range":
             q=parse_qs(parsed.query); r=q.get("r",["2.4GHz"])[0]
             set_active_range(r)
@@ -148,9 +266,26 @@ class H(BaseHTTPRequestHandler):
         self.send_response(404);self.end_headers()
 
 def main():
-    threading.Thread(target=collect,daemon=True).start()
-    s=ThreadingHTTPServer((HOST,PORT),H);print(f"Wi-Spy analyzer v7: http://{HOST}:{PORT} range={ACTIVE_LABEL}",flush=True)
-    signal.signal(signal.SIGINT,lambda a,b:(stop.set(),s.shutdown()))
-    signal.signal(signal.SIGTERM,lambda a,b:(stop.set(),s.shutdown()))
-    s.serve_forever()
+    with ThreadingHTTPServer((HOST, PORT), H) as server:
+        server.timeout = 0.25
+        signal.signal(signal.SIGINT, lambda *_: stop.set())
+        signal.signal(signal.SIGTERM, lambda *_: stop.set())
+        collector = threading.Thread(target=collect, daemon=True)
+        collector.start()
+        threading.Thread(target=collect_wifi, daemon=True).start()
+        print(f"Wi-Spy analyzer v7: http://{HOST}:{server.server_port} range={ACTIVE_LABEL}", flush=True)
+        try:
+            while not stop.is_set():
+                server.handle_request()
+        finally:
+            stop.set()
+            proc = current_proc[0]
+            if proc is not None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            collector.join(timeout=3)
 if __name__=="__main__":main()
